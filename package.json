@@ -1,0 +1,14 @@
+{
+  "name": "arrivals-api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "git@github.com:moodyRahman/arrivals-api.git",
+  "author": "Moody Rahman <moududur921@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.2.1",
+    "gtfs-realtime-bindings": "^2.2.0",
+    "nodemon": "^3.1.14"
+  },
+  "type":"module"
+}
