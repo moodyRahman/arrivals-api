@@ -6,6 +6,28 @@ const FEED = "https://retro.umoiq.com/service/publicJSONFeed";
 const AGENCY = "ttc";
 const ROUTE = "505";
 
+const WIDTH = 32;
+const HEIGHT = 16;
+
+// juiszArray[y][x] = [r, g, b], initialised to black
+const juiszArray = Array.from({ length: HEIGHT }, () =>
+  Array.from({ length: WIDTH }, () => [0, 0, 0])
+);
+
+// Red horizontal line that moves down one row every 2s and wraps to the top
+let lineY = 0;
+function drawLine() {
+  for (let x = 0; x < WIDTH; x++) {
+    juiszArray[lineY][x] = [0, 0, 0];
+  }
+  lineY = (lineY + 1) % HEIGHT;
+  for (let x = 0; x < WIDTH; x++) {
+    juiszArray[lineY][x] = [255, 0, 0];
+  }
+}
+for (let x = 0; x < WIDTH; x++) juiszArray[lineY][x] = [255, 0, 0];
+setInterval(drawLine, 2000);
+
 let cachedStop = null; // { tag, title }
 
 const asArray = (x) => (x == null ? [] : Array.isArray(x) ? x : [x]);
@@ -68,6 +90,15 @@ app.get("/api/505/westbound/church", async (req, res) => {
     console.error(err);
     res.status(502).json({ error: err.message });
   }
+});
+
+// Row-major flatten of juiszArray into RRGGBB per pixel
+app.get("/api/pixels", (req, res) => {
+  const hex = juiszArray
+    .flat()
+    .map((px) => px.map((c) => c.toString(16).padStart(2, "0")).join(""))
+    .join("");
+  res.type("text/plain").send(hex);
 });
 
 app.listen(3000, "0.0.0.0", () => console.log("Listening to all ips http://localhost:3000"));
