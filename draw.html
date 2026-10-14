@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pixel Panel</title>
+  <style>
+    body { margin: 0; background: #222; display: grid; place-items: center; min-height: 100vh; }
+    canvas { image-rendering: pixelated; width: min(90vw, 640px); background: #000; }
+  </style>
+</head>
+<body>
+  <canvas id="panel" width="32" height="16"></canvas>
+  <script>
+    const WIDTH = 32;
+    const HEIGHT = 16;
+
+    async function render() {
+      const hex = await (await fetch("/api/pixels")).text();
+      const canvas = document.getElementById("panel");
+      const ctx = canvas.getContext("2d");
+
+      // /api/pixels is row-major RRGGBB, 6 hex chars per pixel
+      for (let i = 0; i < WIDTH * HEIGHT; i++) {
+        ctx.fillStyle = "#" + hex.slice(i * 6, i * 6 + 6);
+        ctx.fillRect(i % WIDTH, Math.floor(i / WIDTH), 1, 1);
+      }
+    }
+
+    render();
+  </script>
+</body>
+</html>

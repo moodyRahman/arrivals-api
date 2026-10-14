@@ -13,18 +13,7 @@ const HEIGHT = 16;
 const canvas = createCanvas(WIDTH, HEIGHT);
 const ctx = canvas.getContext("2d");
 
-// Red horizontal line that moves down one row every 500ms and wraps to the top
-// let lineY = 0;
-// function draw() {
-//   ctx.fillStyle = "black";
-//   ctx.fillRect(0, 0, WIDTH, HEIGHT);
-//   ctx.fillStyle = "red";
-//   ctx.fillRect(0, lineY, WIDTH, 1);
-//   lineY = (lineY + 1) % HEIGHT;
-// }
-// draw();
-// setInterval(draw, 500);
-
+/*
 // Smiley face (16x16, centred on the canvas) that blinks and grins in a loop.
 // Everything is drawn with 1px fillRects so there is no antialiasing.
 const FACE = 16;
@@ -78,8 +67,64 @@ function animate() {
   drawSmiley(FRAMES[frameIndex]);
   frameIndex = (frameIndex + 1) % FRAMES.length;
 }
-animate();
+// animate();
 setInterval(animate, 500);
+*/
+
+// Tiny 3x5 digit font; each glyph is 5 rows of 3 bits.
+const DIGITS = {
+  0: [7, 5, 5, 5, 7],
+  1: [2, 6, 2, 2, 7],
+  2: [7, 1, 7, 4, 7],
+  3: [7, 1, 7, 1, 7],
+  4: [5, 5, 7, 1, 1],
+  5: [7, 4, 7, 1, 7],
+  6: [7, 4, 7, 5, 7],
+  7: [7, 1, 1, 1, 1],
+  8: [7, 5, 7, 5, 7],
+  9: [7, 5, 7, 1, 7],
+  W: [5, 5, 5, 7, 5],
+  " ": [0, 0, 0, 0, 0],
+};
+
+function drawText(text, x, y) {
+  for (const ch of text) {
+    DIGITS[ch].forEach((bits, row) => {
+      for (let col = 0; col < 3; col++) {
+        if (bits & (4 >> col)) ctx.fillRect(x + col, y + row, 1, 1);
+      }
+    });
+    x += 4;
+  }
+}
+
+// "505 W" in white across the top
+function drawLogo() {
+  ctx.fillStyle = "white";
+
+  const text = "505 W";
+  drawText(text, Math.floor((WIDTH - (text.length * 4 - 1)) / 2), 2);
+}
+
+const SECOND_SHIFT = 9;
+
+// Draw the logo up top and up to 4 arrival times (minutes) in a single row along the bottom, one per 8px cell.
+function drawArrivals(arrivals) {
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  drawLogo();
+  ctx.fillStyle = "yellow";
+
+  const cellW = WIDTH / 4;
+  arrivals.slice(0, 4).forEach((a, i) => {
+    const text = String(Math.min(a.minutes, 99));
+    const textW = text.length * 4 - 1;
+    const centred = i * cellW + Math.floor((cellW - textW) / 2);
+    // second arrival is right-justified to its cell, nudged SECOND_SHIFT px further right
+    const x = i === 1 ? (i + 1) * cellW - textW + SECOND_SHIFT : centred;
+    drawText(text, x, HEIGHT - 5);
+  });
+}
 
 let cachedStop = null; // { tag, title }
 
@@ -116,34 +161,52 @@ async function getWestboundChurchStop() {
   return cachedStop;
 }
 
+async function getArrivals() {
+  const stop = await getWestboundChurchStop();
+  const data = await feed({ command: "predictions", r: ROUTE, s: stop.tag });
+
+  const arrivals = asArray(data.predictions)
+    .flatMap((p) => asArray(p.direction))
+    .flatMap((d) => asArray(d.prediction))
+    .map((p) => ({
+      minutes: Number(p.minutes),
+      seconds: Number(p.seconds),
+      arrivalTime: new Date(Number(p.epochTime)).toISOString(),
+      vehicle: p.vehicle,
+    }))
+    .sort((a, b) => a.seconds - b.seconds);
+
+  return { stop, arrivals: arrivals.slice(0, 5) };
+}
+
 app.get("/api/505/westbound/church", async (req, res) => {
   try {
-    const stop = await getWestboundChurchStop();
-    const data = await feed({ command: "predictions", r: ROUTE, s: stop.tag });
-
-    const predictions = asArray(data.predictions)
-      .flatMap((p) => asArray(p.direction))
-      .flatMap((d) => asArray(d.prediction))
-      .map((p) => ({
-        minutes: Number(p.minutes),
-        seconds: Number(p.seconds),
-        arrivalTime: new Date(Number(p.epochTime)).toISOString(),
-        vehicle: p.vehicle,
-      }))
-      .sort((a, b) => a.seconds - b.seconds);
-
+    const { stop, arrivals } = await getArrivals();
     res.json({
       route: ROUTE,
       direction: "westbound",
       stop: stop.title,
       generatedAt: new Date().toISOString(),
-      arrivals: predictions.slice(0, 5),
+      arrivals,
     });
   } catch (err) {
     console.error(err);
     res.status(502).json({ error: err.message });
   }
 });
+
+// Redraw the canvas with current arrival times once a minute
+async function refreshCanvas() {
+  console.log("refreshing")
+  try {
+    const { arrivals } = await getArrivals();
+    drawArrivals(arrivals.slice(0, 2));
+  } catch (err) {
+    console.error("Canvas refresh failed:", err.message);
+  }
+}
+refreshCanvas();
+setInterval(refreshCanvas, 60 * 1000);
 
 // Row-major RRGGBB per pixel, read from the canvas (RGBA bytes, alpha dropped)
 app.get("/api/pixels", (req, res) => {
@@ -155,6 +218,12 @@ app.get("/api/pixels", (req, res) => {
       .join("");
   }
   res.type("text/plain").send(hex);
+});
+
+// Browser view of the pixel panel
+app.get("/draw", (req, res) => {
+  console.log("serving html")
+  res.sendFile("draw.html", { root: import.meta.dirname });
 });
 
 app.listen(3000, "0.0.0.0", () => console.log("Listening to all ips http://localhost:3000"));
