@@ -5,25 +5,59 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pixel Panel</title>
   <style>
-    body { margin: 0; background: #222; display: grid; place-items: center; min-height: 100vh; }
+    body { margin: 0; background: #222; color: #ccc; font-family: sans-serif; display: grid; place-items: center; align-content: center; gap: 1rem; min-height: 100vh; }
     canvas { image-rendering: pixelated; width: min(90vw, 640px); background: #000; }
+    nav a { color: #888; margin: 0 .5rem; text-decoration: none; }
+    nav a.current { color: #fff; font-weight: bold; }
+    #error { color: #f88; }
   </style>
 </head>
 <body>
-  <canvas id="panel" width="32" height="16"></canvas>
+  <canvas id="panel"></canvas>
+  <nav id="sizes"></nav>
+  <div id="error"></div>
   <script>
-    const WIDTH = 32;
-    const HEIGHT = 16;
+    // Pick the panel with /draw?size=32 (default) or /draw?size=64
+    const ENDPOINTS = {
+      32: "/api/pixels",
+      64: "/api/pixels64",
+    };
+
+    const size = new URLSearchParams(location.search).get("size") || "32";
+
+    document.getElementById("sizes").innerHTML = Object.keys(ENDPOINTS)
+      .map((s) => `<a href="?size=${s}"${s === size ? ' class="current"' : ""}>${s}</a>`)
+      .join("");
 
     async function render() {
-      const hex = await (await fetch("/api/pixels")).text();
+      const endpoint = ENDPOINTS[size];
+      if (!endpoint) {
+        document.getElementById("error").textContent =
+          `Unknown size "${size}". Choose one of: ${Object.keys(ENDPOINTS).join(", ")}`;
+        return;
+      }
+
+      const res = await fetch(endpoint);
+      const hex = await res.text();
+      if (!res.ok) {
+        document.getElementById("error").textContent = hex;
+        return;
+      }
+
+      // The endpoint is row-major RRGGBB (6 hex chars per pixel) on a 2:1 panel,
+      // so the dimensions follow from the pixel count
+      const count = hex.length / 6;
+      const height = Math.sqrt(count / 2);
+      const width = height * 2;
+
       const canvas = document.getElementById("panel");
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext("2d");
 
-      // /api/pixels is row-major RRGGBB, 6 hex chars per pixel
-      for (let i = 0; i < WIDTH * HEIGHT; i++) {
+      for (let i = 0; i < count; i++) {
         ctx.fillStyle = "#" + hex.slice(i * 6, i * 6 + 6);
-        ctx.fillRect(i % WIDTH, Math.floor(i / WIDTH), 1, 1);
+        ctx.fillRect(i % width, Math.floor(i / width), 1, 1);
       }
     }
 

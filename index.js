@@ -7,11 +7,8 @@ const FEED = "https://retro.umoiq.com/service/publicJSONFeed";
 const AGENCY = "ttc";
 const ROUTE = "505";
 
-const WIDTH = 32;
-const HEIGHT = 16;
-
-const canvas = createCanvas(WIDTH, HEIGHT);
-const ctx = canvas.getContext("2d");
+// There is no shared canvas: each pixel endpoint (see PANELS below) creates its
+// own canvas per request and draws its own layout into it.
 
 /*
 // Smiley face (16x16, centred on the canvas) that blinks and grins in a loop.
@@ -87,42 +84,75 @@ const DIGITS = {
   " ": [0, 0, 0, 0, 0],
 };
 
-function drawText(text, x, y) {
+// Draw text with the 3x5 font; `scale` makes each font pixel a scale x scale block
+// (crisp, no antialiasing). Returns the x just past the text.
+function drawText(ctx, text, x, y, scale = 1) {
   for (const ch of text) {
     DIGITS[ch].forEach((bits, row) => {
       for (let col = 0; col < 3; col++) {
-        if (bits & (4 >> col)) ctx.fillRect(x + col, y + row, 1, 1);
+        if (bits & (4 >> col)) ctx.fillRect(x + col * scale, y + row * scale, scale, scale);
       }
     });
-    x += 4;
+    x += 4 * scale;
   }
+  return x;
 }
 
-// "505 W" in white across the top
-function drawLogo() {
-  ctx.fillStyle = "white";
+const textWidth = (text, scale = 1) => (text.length * 4 - 1) * scale;
+const minutesText = (a) => String(Math.min(a.minutes, 99));
 
-  const text = "505 W";
-  drawText(text, Math.floor((WIDTH - (text.length * 4 - 1)) / 2), 2);
+// Row-major RRGGBB per pixel (RGBA bytes read from the canvas, alpha dropped)
+function toHex(ctx, width, height) {
+  const { data } = ctx.getImageData(0, 0, width, height);
+  let hex = "";
+  for (let i = 0; i < data.length; i += 4) {
+    hex += [data[i], data[i + 1], data[i + 2]]
+      .map((c) => c.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  return hex;
 }
 
+// ---- 32x16 layout: logo on top, up to 4 arrivals in one row along the bottom ----
 const SECOND_SHIFT = 9;
 
-// Draw the logo up top and up to 4 arrival times (minutes) in a single row along the bottom, one per 8px cell.
-function drawArrivals(arrivals) {
+function draw32x16(ctx, arrivals) {
   ctx.fillStyle = "black";
-  ctx.fillRect(0, 0, WIDTH, HEIGHT);
-  drawLogo();
-  ctx.fillStyle = "yellow";
+  ctx.fillRect(0, 0, 32, 16);
 
-  const cellW = WIDTH / 4;
+  // "505 W" in white across the top
+  ctx.fillStyle = "white";
+  const logo = "505 W";
+  drawText(ctx, logo, Math.floor((32 - textWidth(logo)) / 2), 2);
+
+  ctx.fillStyle = "yellow";
+  const cellW = 32 / 4;
   arrivals.slice(0, 4).forEach((a, i) => {
-    const text = String(Math.min(a.minutes, 99));    const textW = text.length * 4 - 1;
+    const text = minutesText(a);
+    const textW = textWidth(text);
     const centred = i * cellW + Math.floor((cellW - textW) / 2);
     // second arrival is right-justified to its cell, nudged SECOND_SHIFT px further right
     const x = i === 1 ? (i + 1) * cellW - textW + SECOND_SHIFT : centred;
-    drawText(text, x, HEIGHT - 5);
+    drawText(ctx, text, x, 16 - 5);
   });
+}
+
+// ---- 64x32 layout: logo top-left, next arrival large on the left, the following ones listed on the right ----
+function draw64x32(ctx, arrivals) {
+  ctx.fillStyle = "black";
+  ctx.fillRect(0, 0, 64, 32);
+
+  ctx.fillStyle = "white";
+  drawText(ctx, "505 W", 2, 2);
+
+  const [next, ...later] = arrivals;
+  if (!next) return;
+
+  ctx.fillStyle = "yellow";
+  drawText(ctx, minutesText(next), 2, 14, 3);
+
+  ctx.fillStyle = "orange";
+  later.slice(0, 3).forEach((a, i) => drawText(ctx, minutesText(a), 44, 4 + i * 9));
 }
 
 let cachedStop = null; // { tag, title }
@@ -210,26 +240,28 @@ app.get("/api/505/westbound/church", async (req, res) => {
   });
 });
 
-// Row-major RRGGBB per pixel, drawn from the cached arrivals on each request
-// (RGBA bytes read from the canvas, alpha dropped)
-app.get("/api/pixels", async (req, res) => {
-  await cacheReady;
-  if (!cache) return res.status(502).type("text/plain").send("No arrival data available yet");
+// One endpoint per consumer: each has its own size and its own draw function.
+// A canvas is created per request inside the handler and thrown away afterwards.
+const PANELS = [
+  { path: "/api/pixels", width: 32, height: 16, draw: draw32x16, count: 2 },
+  { path: "/api/pixels64", width: 64, height: 32, draw: draw64x32, count: 4 },
+];
 
-  const upcoming = cache.arrivals
-    .filter((a) => Date.parse(a.arrivalTime) > Date.now())
-    .map((a) => ({ ...a, minutes: minutesUntil(a) }));
-  drawArrivals(upcoming.slice(0, 2));
+for (const { path, width, height, draw, count } of PANELS) {
+  app.get(path, async (req, res) => {
+    await cacheReady;
+    if (!cache) return res.status(502).type("text/plain").send("No arrival data available yet");
 
-  const { data } = ctx.getImageData(0, 0, WIDTH, HEIGHT);
-  let hex = "";
-  for (let i = 0; i < data.length; i += 4) {
-    hex += [data[i], data[i + 1], data[i + 2]]
-      .map((c) => c.toString(16).padStart(2, "0"))
-      .join("");
-  }
-  res.type("text/plain").send(hex);
-});
+    const upcoming = cache.arrivals
+      .filter((a) => Date.parse(a.arrivalTime) > Date.now())
+      .map((a) => ({ ...a, minutes: minutesUntil(a) }))
+      .slice(0, count);
+
+    const ctx = createCanvas(width, height).getContext("2d");
+    draw(ctx, upcoming);
+    res.type("text/plain").send(toHex(ctx, width, height));
+  });
+}
 
 // Browser view of the pixel panel
 app.get("/draw", (req, res) => {
