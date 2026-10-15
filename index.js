@@ -117,8 +117,7 @@ function drawArrivals(arrivals) {
 
   const cellW = WIDTH / 4;
   arrivals.slice(0, 4).forEach((a, i) => {
-    const text = String(Math.min(a.minutes, 99));
-    const textW = text.length * 4 - 1;
+    const text = String(Math.min(a.minutes, 99));    const textW = text.length * 4 - 1;
     const centred = i * cellW + Math.floor((cellW - textW) / 2);
     // second arrival is right-justified to its cell, nudged SECOND_SHIFT px further right
     const x = i === 1 ? (i + 1) * cellW - textW + SECOND_SHIFT : centred;
@@ -179,37 +178,49 @@ async function getArrivals() {
   return { stop, arrivals: arrivals.slice(0, 5) };
 }
 
-app.get("/api/505/westbound/church", async (req, res) => {
-  try {
-    const { stop, arrivals } = await getArrivals();
-    res.json({
-      route: ROUTE,
-      direction: "westbound",
-      stop: stop.title,
-      generatedAt: new Date().toISOString(),
-      arrivals,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(502).json({ error: err.message });
-  }
-});
+// Latest good fetch: { stop, arrivals, fetchedAt }. Refreshed once a minute;
+// on failure the previous value is kept.
+let cache = null;
 
-// Redraw the canvas with current arrival times once a minute
-async function refreshCanvas() {
+async function refreshCache() {
   console.log("refreshing")
   try {
-    const { arrivals } = await getArrivals();
-    drawArrivals(arrivals.slice(0, 2));
+    const { stop, arrivals } = await getArrivals();
+    cache = { stop, arrivals, fetchedAt: new Date() };
   } catch (err) {
-    console.error("Canvas refresh failed:", err.message);
+    console.error("Cache refresh failed:", err.message);
   }
 }
-refreshCanvas();
-setInterval(refreshCanvas, 60 * 1000);
+const cacheReady = refreshCache();
+setInterval(refreshCache, 60 * 1000);
 
-// Row-major RRGGBB per pixel, read from the canvas (RGBA bytes, alpha dropped)
-app.get("/api/pixels", (req, res) => {
+// Whole minutes until arrival, counted down live from the predicted arrival time
+const minutesUntil = (a) => Math.max(0, Math.floor((Date.parse(a.arrivalTime) - Date.now()) / 60000));
+
+app.get("/api/505/westbound/church", async (req, res) => {
+  await cacheReady;
+  if (!cache) return res.status(502).json({ error: "No arrival data available yet" });
+
+  res.json({
+    route: ROUTE,
+    direction: "westbound",
+    stop: cache.stop.title,
+    generatedAt: cache.fetchedAt.toISOString(),
+    arrivals: cache.arrivals,
+  });
+});
+
+// Row-major RRGGBB per pixel, drawn from the cached arrivals on each request
+// (RGBA bytes read from the canvas, alpha dropped)
+app.get("/api/pixels", async (req, res) => {
+  await cacheReady;
+  if (!cache) return res.status(502).type("text/plain").send("No arrival data available yet");
+
+  const upcoming = cache.arrivals
+    .filter((a) => Date.parse(a.arrivalTime) > Date.now())
+    .map((a) => ({ ...a, minutes: minutesUntil(a) }));
+  drawArrivals(upcoming.slice(0, 2));
+
   const { data } = ctx.getImageData(0, 0, WIDTH, HEIGHT);
   let hex = "";
   for (let i = 0; i < data.length; i += 4) {
