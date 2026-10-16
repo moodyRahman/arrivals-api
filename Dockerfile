@@ -11,7 +11,7 @@ COPY package.json yarn.lock ./
 RUN yarn install --frozen-lockfile --production && yarn cache clean
 
 # Copy the app source
-COPY index.js draw.html ./
+COPY index.js draw.js draw.html drawer.html ./
 
 USER node
 

@@ -1,8 +1,10 @@
 // npm install express   (Node 18+ for built-in fetch)
 import express from "express";
 import { createCanvas } from "@napi-rs/canvas";
+import { drawRouter } from "./draw.js";
 
 const app = express();
+app.use(drawRouter);
 const FEED = "https://retro.umoiq.com/service/publicJSONFeed";
 const AGENCY = "ttc";
 const ROUTE = "505";
