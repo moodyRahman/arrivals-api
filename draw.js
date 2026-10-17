@@ -18,7 +18,7 @@ const COLOR_RE = /^#?([0-9a-f]{6})$/i;
 
 // Snapshots: every SNAPSHOT_INTERVAL_MS the canvas is saved as a PNG if it changed
 const SNAPSHOT_DIR = process.env.CANVAS_OUT_DIR ?? "/usr/share/out";
-const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+const SNAPSHOT_INTERVAL_MS = 0.5 * 60 * 1000;
 
 // RGB bytes, row-major; starts black
 const pixels = Buffer.alloc(DRAW_WIDTH * DRAW_HEIGHT * 3);
