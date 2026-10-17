@@ -6,6 +6,9 @@
 //
 // The canvas lives in memory only, so it resets when the server restarts.
 import express from "express";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import zlib from "node:zlib";
 
 export const DRAW_WIDTH = 32;
 export const DRAW_HEIGHT = 16;
@@ -13,8 +16,69 @@ export const DRAW_HEIGHT = 16;
 const MAX_PIXELS_PER_POST = 2048;
 const COLOR_RE = /^#?([0-9a-f]{6})$/i;
 
+// Snapshots: every SNAPSHOT_INTERVAL_MS the canvas is saved as a PNG if it changed
+const SNAPSHOT_DIR = process.env.CANVAS_OUT_DIR ?? "/usr/share/out";
+const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+
 // RGB bytes, row-major; starts black
 const pixels = Buffer.alloc(DRAW_WIDTH * DRAW_HEIGHT * 3);
+
+// ---- PNG snapshots ----
+
+// Minimal 8-bit RGB PNG encoder (avoids pulling the native canvas library into this module)
+function chunk(type, data) {
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const out = Buffer.alloc(body.length + 8);
+  out.writeUInt32BE(data.length, 0);
+  body.copy(out, 4);
+  out.writeUInt32BE(zlib.crc32(body), body.length + 4);
+  return out;
+}
+
+function encodePng(rgb, width, height) {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: RGB
+
+  // each scanline is prefixed with a filter-type byte (0 = none)
+  const raw = Buffer.alloc((width * 3 + 1) * height);
+  for (let y = 0; y < height; y++) {
+    rgb.copy(raw, y * (width * 3 + 1) + 1, y * width * 3, (y + 1) * width * 3);
+  }
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", zlib.deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+let lastSaved = Buffer.from(pixels); // the blank canvas counts as already saved
+
+// Save the canvas as a timestamped PNG if it differs from the last saved one.
+// Returns the file path, or null if nothing changed.
+export async function saveIfChanged() {
+  if (pixels.equals(lastSaved)) return null;
+
+  const snapshot = Buffer.from(pixels); // copy: POSTs can land while the write is in flight
+  const file = path.join(SNAPSHOT_DIR, `canvas-${new Date().toISOString().replace(/:/g, "-")}.png`);
+  await mkdir(SNAPSHOT_DIR, { recursive: true });
+  await writeFile(file, encodePng(snapshot, DRAW_WIDTH, DRAW_HEIGHT));
+  lastSaved = snapshot; // only after a successful write, so a failure retries next time
+  return file;
+}
+
+setInterval(async () => {
+  try {
+    const file = await saveIfChanged();
+    if (file) console.log("Saved canvas snapshot", file);
+  } catch (err) {
+    console.error("Canvas snapshot failed:", err.message);
+  }
+}, SNAPSHOT_INTERVAL_MS);
 
 export const drawRouter = express.Router();
 

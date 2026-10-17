@@ -13,6 +13,10 @@ RUN yarn install --frozen-lockfile --production && yarn cache clean
 # Copy the app source
 COPY index.js draw.js draw.html drawer.html ./
 
+# Canvas snapshots are written here; mount a volume on it to keep them
+RUN mkdir -p /usr/share/out && chown node:node /usr/share/out
+VOLUME /usr/share/out
+
 USER node
 
 EXPOSE 3000
