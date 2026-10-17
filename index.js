@@ -248,7 +248,7 @@ app.get("/api/505/westbound/church", async (req, res) => {
 // A canvas is created per request inside the handler and thrown away afterwards.
 const PANELS = [
   { path: "/api/pixels", width: 32, height: 16, draw: draw32x16, count: 2 },
-  { path: "/api/pixels64", width: 64, height: 32, draw: draw64x32, count: 4 },
+  { path: "/api/juiszelle_64wide", width: 64, height: 32, draw: draw64x32, count: 4 },
 ];
 
 for (const { path, width, height, draw, count } of PANELS) {
