@@ -6,14 +6,15 @@
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <Fonts/Org_01.h>
 
-#define PANEL_RES_X 32
-#define PANEL_RES_Y 16
+#define PANEL_RES_X 64
+#define PANEL_RES_Y 32
 #define PANEL_CHAIN 1
 #define PIXEL_COUNT (PANEL_RES_X * PANEL_RES_Y)
 
-const char* PIXELS_URL = "https://arrival.moodyrahman.com/api/pixels";
-const uint32_t POLL_INTERVAL_MS = 45000;
+const char* PIXELS_URL = "https://arrival.moodyrahman.com/api/pixels64";
+const uint32_t POLL_INTERVAL_MS = 1000;
 const uint32_t RETRY_INTERVAL_MS = 3000;
+const uint32_t WIFI_RECONNECT_INTERVAL_MS = 8000; // between WiFi.reconnect() calls during an outage
 const uint16_t HTTP_TIMEOUT_MS = 5000; // TLS handshake can exceed 2s
 
 // Wi-Fi provisioning
@@ -129,10 +130,11 @@ bool connectBlocking(const String& ssid, const String& pass, uint32_t timeoutMs)
   return true;
 }
 
-void showMessage(const char* text) {
-  dma_display->clearScreen();
+// Draws text with its cursor at (x, y); pass clear=false to add a line to what is already shown
+void showMessage(const char* text, int x, int y, bool clear = true) {
+  if (clear) dma_display->clearScreen();
   dma_display->setTextColor(dma_display->color565(255, 255, 255));
-  dma_display->setCursor(1, 8);
+  dma_display->setCursor(x, y);
   dma_display->print(text);
 }
 
@@ -152,7 +154,7 @@ void checkResetButton() {
   if (millis() - pressedAt < RESET_HOLD_MS) return;
 
   clearCredentials();
-  showMessage("RESET");
+  showMessage("RESET", 1, 8);
   // GPIO0 low at reset selects download mode, so wait for release before restarting
   while (digitalRead(RESET_BUTTON_PIN) == LOW) delay(10);
   ESP.restart();
@@ -221,7 +223,7 @@ void startPortalServer() {
   });
   server.begin();
 
-  showMessage("SETUP");
+  showMessage("SETUP", 1, 8);
   Serial.println("[portal] ready");
 }
 
@@ -310,6 +312,42 @@ void setup() {
   ESP.restart();
 }
 
+// One HTTPS connection kept open between polls (a TLS handshake per second would
+// keep the ESP32 busy). It is opened lazily and dropped on any failure.
+HTTPClient http;
+bool connectionOpen = false;
+
+void closeConnection() {
+  http.end();
+  connectionOpen = false;
+}
+
+// Fetch the pixels over the kept-alive connection and draw them.
+// Returns true if a complete frame was drawn.
+bool fetchFrame() {
+  if (!connectionOpen) {
+    http.begin(PIXELS_URL);
+    http.setReuse(true);
+    http.setTimeout(HTTP_TIMEOUT_MS);
+    connectionOpen = true;
+  }
+
+  if (http.GET() != HTTP_CODE_OK) return false;
+
+  // getString() reads the whole body, which is required for the connection to be reusable
+  String body = http.getString();
+  if (body.length() < PIXEL_COUNT * 6) return false;
+
+  const char* p = body.c_str();
+  for (int i = 0; i < PIXEL_COUNT; i++, p += 6) {
+    uint8_t r = (hexNibble(p[0]) << 4) | hexNibble(p[1]);
+    uint8_t g = (hexNibble(p[2]) << 4) | hexNibble(p[3]);
+    uint8_t b = (hexNibble(p[4]) << 4) | hexNibble(p[5]);
+    dma_display->drawPixelRGB888(i % PANEL_RES_X, i / PANEL_RES_X, r, g, b);
+  }
+  return true;
+}
+
 void loop() {
   if (portalActive) {
     portalLoop();
@@ -317,32 +355,34 @@ void loop() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    WiFi.reconnect();
+    closeConnection();  // any open connection died with the Wi-Fi link
+    // Rate-limited: reconnect() aborts any attempt still in progress
+    static uint32_t lastReconnectAt = 0;
+    if (lastReconnectAt == 0 || millis() - lastReconnectAt >= WIFI_RECONNECT_INTERVAL_MS) {
+      lastReconnectAt = millis() | 1;  // never 0, so 0 can mean "not tried yet"
+      WiFi.reconnect();
+    }
     delayWithResetCheck(500);
     return;
   }
 
-  // Polls are far apart, so any kept-alive connection would be dead by the
-  // next one. Use a fresh connection each time instead.
-  HTTPClient http;
-  http.begin(PIXELS_URL);
-  http.setTimeout(HTTP_TIMEOUT_MS);
-
-  bool ok = false;
-  if (http.GET() == HTTP_CODE_OK) {
-    String body = http.getString();
-    if (body.length() >= PIXEL_COUNT * 6) {
-      const char* p = body.c_str();
-      for (int i = 0; i < PIXEL_COUNT; i++, p += 6) {
-        uint8_t r = (hexNibble(p[0]) << 4) | hexNibble(p[1]);
-        uint8_t g = (hexNibble(p[2]) << 4) | hexNibble(p[3]);
-        uint8_t b = (hexNibble(p[4]) << 4) | hexNibble(p[5]);
-        dma_display->drawPixelRGB888(i % PANEL_RES_X, i / PANEL_RES_X, r, g, b);
-      }
-      ok = true;
-    }
+  bool ok = fetchFrame();
+  if (!ok) {
+    // The kept-alive connection may have gone stale (idle timeout, Wi-Fi blip,
+    // server restart): drop it and try once more on a fresh connection.
+    closeConnection();
+    ok = fetchFrame();
   }
-  http.end();
+
+  // Show the message once per outage; the next good frame overwrites every pixel
+  static bool serverDownShown = false;
+  if (!ok && !serverDownShown) {
+    showMessage("SERVER IS", 1, 8);
+    showMessage("DOWN", 1, 16, false);
+    serverDownShown = true;
+  } else if (ok) {
+    serverDownShown = false;
+  }
 
   // On failure retry soon instead of waiting a full poll interval
   delayWithResetCheck(ok ? POLL_INTERVAL_MS : RETRY_INTERVAL_MS);
