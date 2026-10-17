@@ -1,9 +1,11 @@
 // npm install express   (Node 18+ for built-in fetch)
 import express from "express";
 import { createCanvas } from "@napi-rs/canvas";
+import morgan from "morgan";
 import { drawRouter } from "./draw.js";
 
 const app = express();
+app.use(morgan("combined")); // must come before the routes so every endpoint is logged
 app.use(drawRouter);
 const FEED = "https://retro.umoiq.com/service/publicJSONFeed";
 const AGENCY = "ttc";
