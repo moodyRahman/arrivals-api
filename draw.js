@@ -58,17 +58,23 @@ function encodePng(rgb, width, height) {
 
 let lastSaved = Buffer.from(pixels); // the blank canvas counts as already saved
 
-// Save the canvas as a timestamped PNG if it differs from the last saved one.
+// Write the current canvas to SNAPSHOT_DIR as a timestamped PNG.
+// Returns { file, png } (the path written and the PNG bytes).
+async function writeSnapshot() {
+  const snapshot = Buffer.from(pixels); // copy: POSTs can land while the write is in flight
+  const png = encodePng(snapshot, DRAW_WIDTH, DRAW_HEIGHT);
+  const file = path.join(SNAPSHOT_DIR, `canvas-${new Date().toISOString().replace(/:/g, "-")}.png`);
+  await mkdir(SNAPSHOT_DIR, { recursive: true });
+  await writeFile(file, png);
+  lastSaved = snapshot; // only after a successful write, so a failure retries next time
+  return { file, png };
+}
+
+// Save the canvas as a PNG if it differs from the last saved one.
 // Returns the file path, or null if nothing changed.
 export async function saveIfChanged() {
   if (pixels.equals(lastSaved)) return null;
-
-  const snapshot = Buffer.from(pixels); // copy: POSTs can land while the write is in flight
-  const file = path.join(SNAPSHOT_DIR, `canvas-${new Date().toISOString().replace(/:/g, "-")}.png`);
-  await mkdir(SNAPSHOT_DIR, { recursive: true });
-  await writeFile(file, encodePng(snapshot, DRAW_WIDTH, DRAW_HEIGHT));
-  lastSaved = snapshot; // only after a successful write, so a failure retries next time
-  return file;
+  return (await writeSnapshot()).file;
 }
 
 setInterval(async () => {
@@ -87,6 +93,18 @@ drawRouter.get("/api/canvas", (req, res) => {
     .set({ "X-Width": DRAW_WIDTH, "X-Height": DRAW_HEIGHT, "Access-Control-Expose-Headers": "X-Width, X-Height" })
     .type("text/plain")
     .send(pixels.toString("hex"));
+});
+
+// Render the current canvas to a PNG, store it in SNAPSHOT_DIR, and return it
+drawRouter.get("/api/canvas.png", async (req, res) => {
+  try {
+    const { file, png } = await writeSnapshot();
+    console.log("Saved canvas snapshot", file);
+    res.set("X-Saved-As", path.basename(file)).type("image/png").send(png);
+  } catch (err) {
+    console.error("Canvas snapshot failed:", err.message);
+    res.status(500).json({ error: `could not save snapshot: ${err.message}` });
+  }
 });
 
 drawRouter.post("/api/canvas", express.json({ limit: "128kb" }), (req, res) => {
